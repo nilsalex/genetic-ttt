@@ -12,6 +12,8 @@ import Control.Parallel.Strategies (parListChunk, rpar, rdeepseq, rseq, runEval,
 
 import Data.List (foldl', sort, sortBy)
 
+import GHC.Conc (numCapabilities)
+
 import qualified Data.ByteString.Lazy as BS (writeFile, readFile)
 import Data.Serialize (encodeLazy, decodeLazy)
 
@@ -234,7 +236,7 @@ select ps = (maximum scores,
              zip ps scores)
     where
         scores = runEval $
-                 parListChunk (n `div` 8) rdeepseq $
+                 parListChunk (n `div` numCapabilities) rdeepseq $
                  fmap (\x -> length $ filter not $ fmap (loses x) ps) ps
         n = length ps
         n' = n `div` 100
@@ -262,6 +264,6 @@ someFunc = do
         go ps = let (score, fittest) = select ps
                 in do
                      putStrLn $ show score ++ "\t(" ++ show (length ps) ++ ")"
-                     if score == 0
+                     if score == 1000
                        then return () >> (toFile "weights.dat" $ head fittest)
                        else go =<< evalRandIO (breed fittest)
