@@ -6,7 +6,14 @@ import qualified Numeric.LinearAlgebra.Data as HM
 import Control.Monad.Random
 import Control.Monad.Random.Class
 
-import Data.List (foldl', sort)
+import Control.DeepSeq
+
+import Control.Parallel.Strategies (parListChunk, rpar, rdeepseq, rseq, runEval, runEvalIO)
+
+import Data.List (foldl', sort, sortBy)
+
+import qualified Data.ByteString.Lazy as BS (writeFile, readFile)
+import Data.Serialize (encodeLazy, decodeLazy)
 
 data Player = X | O deriving (Show, Ord, Eq, Enum, Read)
 
@@ -103,6 +110,16 @@ battle' pX pO g@(p, _) = case moveAI ai g of
                 X -> pX
                 O -> pO
 
+loses :: DenseData -> DenseData -> Bool
+loses p1 p2 = case w1 of
+                Just O -> True
+                _      -> case w2 of
+                            Just X -> True
+                            _      -> False
+    where
+        w1 = battle p1 p2
+        w2 = battle p2 p1
+
 beats :: DenseData -> DenseData -> Bool
 beats p1 p2 = case w1 of
                 Just X -> case w2 of
@@ -122,6 +139,17 @@ type Activation = Layer -> Layer
 type DenseData = [(Bias, Weight)]
 type DenseNet  = (DenseData, [Activation])
 
+type CrossingData = [(Bias, Bias, Weight, Weight)]
+
+toFile :: String -> DenseData -> IO ()
+toFile fileName net = BS.writeFile fileName $
+                      encodeLazy $
+                      fmap (\(b, w) -> (HM.toList b, HM.toLists w)) net
+
+fromFile :: String -> IO DenseData
+fromFile fileName = fmap (fmap (\(b, w) -> (HM.fromList b, HM.fromLists w)) . (\(Right x) -> x) . decodeLazy) $
+                    BS.readFile fileName
+
 randBias :: RandomGen g => Int -> Rand g Bias
 randBias n = (pure . HM.fromList . take n) =<< getRandomRs (-1, 1)
 
@@ -135,6 +163,25 @@ repeatM n m =
         x  <- m
         xs <- repeatM (n-1) m
         pure (x:xs)
+
+toBinary :: (Num a, Ord a) => a -> a
+toBinary x
+    | x < 0 = 0
+    | otherwise = 1
+
+invert :: Num a => a -> a
+invert x = 1-x
+
+randCrossing :: RandomGen g => Rand g CrossingData
+randCrossing =
+  do
+    ~[(b1, w01), (b2, w12)] <- randPlayer
+    let b1' = HM.cmap toBinary b1
+    let b2' = HM.cmap toBinary b2
+    let w01' = HM.cmap toBinary w01
+    let w12' = HM.cmap toBinary w12
+    return [(b1', HM.cmap invert b1', w01', HM.cmap invert w01'),
+            (b2', HM.cmap invert b2', w12', HM.cmap invert w12')]
 
 randPlayer :: RandomGen g => Rand g DenseData
 randPlayer =
@@ -179,10 +226,42 @@ runDenseNet (dat, acts) l =
 predict :: DenseNet -> Layer -> Int
 predict net = HM.maxIndex . runDenseNet net
 
+select :: [DenseData] -> (Int, [DenseData])
+select ps = (maximum scores,
+             take n' $
+             map fst $
+             sortBy (\(_, score1) (_, score2) -> score2 `compare` score1) $
+             zip ps scores)
+    where
+        scores = runEval $
+                 parListChunk (n `div` 8) rdeepseq $
+                 fmap (\x -> length $ filter not $ fmap (loses x) ps) ps
+        n = length ps
+        n' = n `div` 100
+
+breed2' :: DenseData -> DenseData -> CrossingData -> DenseData
+breed2' m f cd = map (\((b, w), (b', w'), (cb, cb', cw, cw')) -> (b*cb + b' * cb', w*cw + w'*cw')) $ zip3 m f cd
+
+breed2 :: RandomGen g => DenseData -> DenseData -> Rand g [DenseData]
+breed2 m f =
+    do
+        cds <- repeatM 10 randCrossing
+        return $ fmap (breed2' m f) cds
+
+breed :: RandomGen g => [DenseData] -> Rand g [DenseData]
+breed ps = fmap concat $ sequence $ breed2 <$> ps <*> ps
+
+initPopulation :: RandomGen g => Int -> Rand g [DenseData]
+initPopulation n = repeatM n randPlayer
+
 someFunc :: IO ()
-someFunc =
-  do
-    ps <- evalRandIO $ repeatM 1000 randPlayer
-    let l = fmap (\x -> length $ filter id $ fmap (beats x) ps) ps
-    let l' = sort l
-    mapM_ print l'
+someFunc = do
+            ps <- evalRandIO $ initPopulation 1000
+            go ps
+    where
+        go ps = let (score, fittest) = select ps
+                in do
+                     putStrLn $ show score ++ "\t(" ++ show (length ps) ++ ")"
+                     if score == 0
+                       then return () >> (toFile "weights.dat" $ head fittest)
+                       else go =<< evalRandIO (breed fittest)

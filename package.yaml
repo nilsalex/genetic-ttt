@@ -24,6 +24,10 @@ dependencies:
 - hmatrix
 - MonadRandom
 - tf-random
+- parallel
+- deepseq
+- bytestring
+- cereal
 
 library:
   source-dirs: src
