@@ -10,7 +10,7 @@ import Control.DeepSeq
 
 import Control.Parallel.Strategies (parListChunk, rpar, rdeepseq, rseq, runEval, runEvalIO)
 
-import Data.List (foldl', sort, sortBy)
+import Data.List (foldl', sort, sortBy, maximumBy, minimumBy)
 
 import GHC.Conc (numCapabilities)
 
@@ -21,6 +21,34 @@ data Player = X | O deriving (Show, Ord, Eq, Enum, Read)
 
 type Grid   = (Player, [Maybe Player])
 data Result = Undecided | Tie | Win Player deriving Show
+
+data Tree a = Node a [Tree a] deriving (Show)
+
+moves :: (Grid, Result) -> [(Grid, Result)]
+moves (g@(_, xs), Undecided) = gs
+    where
+        l  = length $ filter id $ map isNothing xs
+        gs = map (\i -> move i g) [0..l-1]
+moves _ = []
+
+gameTree :: (Grid, Result) -> Tree (Grid, Result)
+gameTree n = Node n fs
+    where
+        fs = map gameTree $ moves n
+
+maxMin :: Tree (Grid, Result) -> (Grid, Int)
+maxMin (Node (g, Tie) []) = (g, 0)
+maxMin (Node (g, Win X) []) = (g, 1)
+maxMin (Node (g, Win O) []) = (g, -1)
+maxMin (Node (g, _) []) = error "Undecided Leaf"
+maxMin (Node n fs) = maximumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map minMax fs
+
+minMax :: Tree (Grid, Result) -> (Grid, Int)
+minMax (Node (g, Tie) []) = (g, 0)
+minMax (Node (g, Win X) []) = (g, 1)
+minMax (Node (g, Win O) []) = (g, -1)
+minMax (Node (g, _) []) = error "Undecided Leaf"
+minMax (Node n fs) = minimumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map maxMin fs
 
 empty :: Grid
 empty = (X, take 9 $ repeat Nothing)
