@@ -24,6 +24,19 @@ data Result = Undecided | Tie | Win Player deriving Show
 
 data Tree a = Node a [Tree a] deriving (Show)
 
+showGrid :: Grid -> String
+showGrid (_, xs) = " " ++ x00 ++ " | " ++ x01 ++ " | " ++ x02 ++ "\n" ++
+                   "-----------" ++ "\n" ++
+                   " " ++ x10 ++ " | " ++ x11 ++ " | " ++ x12 ++ "\n" ++
+                   "-----------" ++ "\n" ++
+                   " " ++ x20 ++ " | " ++ x21 ++ " | " ++ x22 ++ "\n"
+    where
+        [x00, x01, x02, x10, x11, x12, x20, x21, x22] =
+            map (\x -> case x of
+                          Nothing -> " "
+                          Just X  -> "X"
+                          Just O  -> "O") xs
+
 moves :: (Grid, Result) -> [(Grid, Result)]
 moves (g@(_, xs), Undecided) = gs
     where
@@ -36,19 +49,47 @@ gameTree n = Node n fs
     where
         fs = map gameTree $ moves n
 
-maxMin :: Tree (Grid, Result) -> (Grid, Int)
-maxMin (Node (g, Tie) []) = (g, 0)
-maxMin (Node (g, Win X) []) = (g, 1)
-maxMin (Node (g, Win O) []) = (g, -1)
-maxMin (Node (g, _) []) = error "Undecided Leaf"
-maxMin (Node n fs) = maximumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map minMax fs
+maxMin :: RandomGen g => Tree (Grid, Result) -> Rand g (Maybe ((Grid, Result), Int))
+maxMin (Node _ []) = return Nothing
+maxMin (Node n fs) = case mms of
+                        [] -> return Nothing
+                        _  -> do
+                               i <- getRandomR (0, length maxScores - 1)
+                               return (Just $ maxScores !! i)
+    where
+        mms = map minMax' fs
+        maxScore  = maximum $ map snd mms
+        maxScores = filter ((==maxScore) . snd) mms
 
-minMax :: Tree (Grid, Result) -> (Grid, Int)
-minMax (Node (g, Tie) []) = (g, 0)
-minMax (Node (g, Win X) []) = (g, 1)
-minMax (Node (g, Win O) []) = (g, -1)
-minMax (Node (g, _) []) = error "Undecided Leaf"
-minMax (Node n fs) = minimumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map maxMin fs
+maxMin' :: Tree (Grid, Result) -> ((Grid, Result), Int)
+maxMin' (Node n@(_, Tie) []) = (n, 0)
+maxMin' (Node n@(_, Win O) []) = (n, -1)
+maxMin' (Node n@(_, Win X) []) = (n, 1)
+maxMin' (Node (_, _) []) = error "Undecided Leaf"
+maxMin' (Node n fs) = (n, snd $ maximumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map minMax' fs)
+
+minMax :: RandomGen g => Tree (Grid, Result) -> Rand g (Maybe ((Grid, Result), Int))
+minMax (Node _ []) = return Nothing
+minMax (Node n fs) = case mms of
+                        [] -> return Nothing
+                        _  -> do
+                               i <- getRandomR (0, length minScores - 1)
+                               return (Just $ minScores !! i)
+    where
+        mms = map maxMin' fs
+        minScore  = minimum $ map snd mms
+        minScores = filter ((==minScore) . snd) mms
+
+minMax' :: Tree (Grid, Result) -> ((Grid, Result), Int)
+minMax' (Node n@(_, Tie) []) = (n, 0)
+minMax' (Node n@(_, Win O) []) = (n, -1)
+minMax' (Node n@(_, Win X) []) = (n, 1)
+minMax' (Node (_, _) []) = error "Undecided Leaf"
+minMax' (Node n fs) = (n, snd $ minimumBy (\(_, r1) (_, r2) -> r1 `compare` r2) $ map maxMin' fs)
+
+moveMM :: RandomGen g => (Grid, Result) -> Rand g (Maybe (Grid, Result))
+moveMM gr@((X, _), _) = fmap (fmap fst) . maxMin $ gameTree gr
+moveMM gr@((O, _), _) = fmap (fmap fst) . minMax $ gameTree gr
 
 empty :: Grid
 empty = (X, take 9 $ repeat Nothing)
@@ -139,6 +180,16 @@ battle' pX pO g@(p, _) = case moveAI ai g of
         ai = case p of
                 X -> pX
                 O -> pO
+
+battleMM' :: RandomGen g => (Grid, Result) -> Rand g [(Grid, Result)]
+battleMM' g = do
+                g' <- moveMM g
+                case g' of
+                  Nothing  -> return [g]
+                  Just g'' -> fmap (g:) $ battleMM' g''
+
+battleMM :: RandomGen g => Rand g [(Grid, Result)]
+battleMM = battleMM' (empty, Undecided)
 
 loses :: DenseData -> DenseData -> Bool
 loses p1 p2 = case w1 of
